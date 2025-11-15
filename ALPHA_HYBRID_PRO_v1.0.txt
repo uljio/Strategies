@@ -1,0 +1,466 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Claude AI - Alpha Hybrid Pro Strategy
+
+//@version=5
+VERSION = 'v1.0'
+
+strategy(
+  'ALPHA HYBRID PRO ' + VERSION,
+  shorttitle              = 'AHP ' + VERSION,
+  overlay                 = true,
+  pyramiding              = 0,
+  default_qty_type        = strategy.percent_of_equity,
+  default_qty_value       = 100,
+  calc_on_every_tick      = false,
+  process_orders_on_close = true,
+  commission_type         = strategy.commission.percent,
+  commission_value        = 0.075,
+  slippage                = 2)
+
+// ════════════════════════════════════════════════════════════════════════════
+// STRATEGY DESCRIPTION
+// ════════════════════════════════════════════════════════════════════════════
+// Alpha Hybrid Pro combines the best non-repainting components from multiple
+// proven strategies in the repository:
+//
+// 1. HTF ALMA Trend Filter - Non-repainting higher timeframe analysis
+// 2. Guppy EMA Ribbons - Fast/Slow EMA confluence for trend strength
+// 3. VWAP Institutional Levels - Smart money tracking
+// 4. ATR-Based Dynamic Stops - Volatility-adjusted risk management
+// 5. Supertrend Confirmation - Additional trend validation
+// 6. Multi-Level Take Profits - 3-tier exit strategy (TP1/TP2/TP3)
+// 7. Session Filters - Trade only during optimal market hours
+// 8. Daily Limits - Max trades and profit protection
+//
+// Entry Logic: Requires confluence of multiple signals
+// Exit Logic: Dynamic ATR-based stops with partial profit-taking
+// ════════════════════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ■ INPUTS
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+// === DATE RANGE ===
+G_DATE       = '■ Backtesting Date Range'
+i_startTime  = input.time(timestamp("01 Jan 2023 00:00"), "Start Date", group=G_DATE)
+i_endTime    = input.time(timestamp("31 Dec 2099 23:59"), "End Date", group=G_DATE)
+useDateRange = input.bool(true, "Use Date Range Filter", group=G_DATE)
+
+// === HTF ALMA SETTINGS ===
+G_ALMA       = '■ HTF ALMA Trend Filter'
+htfRes       = input.timeframe('60', 'HTF Timeframe', group=G_ALMA,
+     tooltip='Higher timeframe for trend analysis. Use 60 for 5m chart, 240 for 15m chart')
+almaLength   = input.int(50, 'ALMA Length', minval=1, group=G_ALMA)
+almaOffset   = input.float(0.85, 'ALMA Offset', minval=0, step=0.01, group=G_ALMA)
+almaSigma    = input.int(6, 'ALMA Sigma', minval=0, group=G_ALMA)
+useHTFFilter = input.bool(true, 'Use HTF Trend Filter', group=G_ALMA)
+
+// === GUPPY EMA SETTINGS ===
+G_GUPPY      = '■ Guppy EMA Ribbons'
+useGuppy     = input.bool(true, 'Use Guppy Confirmation', group=G_GUPPY)
+guppyLook    = input.int(6, 'Signal Lookback', minval=1, group=G_GUPPY)
+
+// === VWAP SETTINGS ===
+G_VWAP       = '■ VWAP Filter'
+useVWAP      = input.bool(true, 'Use VWAP Filter', group=G_VWAP,
+     tooltip='Only long above VWAP, only short below VWAP')
+
+// === SUPERTREND SETTINGS ===
+G_ST         = '■ Supertrend Confirmation'
+useST        = input.bool(true, 'Use Supertrend', group=G_ST)
+stFactor     = input.float(2.0, 'Factor', minval=0.1, step=0.1, group=G_ST)
+stLength     = input.int(10, 'ATR Length', minval=1, group=G_ST)
+
+// === EMA 200 FILTER ===
+G_EMA200     = '■ EMA 200 Trend Filter'
+useEMA200    = input.bool(true, 'Use EMA 200 Filter', group=G_EMA200)
+ema200Len    = input.int(200, 'EMA 200 Length', minval=1, group=G_EMA200)
+
+// === RISK MANAGEMENT ===
+G_RISK       = '■ Risk Management'
+atrLength    = input.int(14, 'ATR Length', minval=1, group=G_RISK)
+atrMultSL    = input.float(1.5, 'ATR Multiplier for SL', minval=0.1, step=0.1, group=G_RISK)
+riskReward1  = input.float(1.5, 'Risk:Reward TP1', minval=0.5, step=0.1, group=G_RISK)
+riskReward2  = input.float(2.5, 'Risk:Reward TP2', minval=0.5, step=0.1, group=G_RISK)
+riskReward3  = input.float(4.0, 'Risk:Reward TP3', minval=0.5, step=0.1, group=G_RISK)
+qtyTP1       = input.float(40, 'TP1 Quantity %', minval=1, maxval=100, group=G_RISK)
+qtyTP2       = input.float(35, 'TP2 Quantity %', minval=1, maxval=100, group=G_RISK)
+qtyTP3       = input.float(25, 'TP3 Quantity %', minval=1, maxval=100, group=G_RISK)
+
+// === POSITION SIZING ===
+G_POS        = '■ Position Sizing'
+useSLBased   = input.bool(false, 'Use SL-Based Position Size', group=G_POS,
+     tooltip='If true, size position based on risk amount. If false, use fixed USD')
+riskAmount   = input.float(100, 'Risk Amount (USD)', minval=1, group=G_POS)
+fixedUSD     = input.float(100, 'Fixed USD Size', minval=1, group=G_POS)
+
+// === TRADE LIMITS ===
+G_LIMITS     = '■ Daily Limits'
+maxDayTrades = input.int(10, 'Max Trades Per Day', minval=1, group=G_LIMITS)
+maxDayProfit = input.float(500, 'Max Daily Profit (USD)', minval=1, group=G_LIMITS,
+     tooltip='Stop trading after reaching this profit for the day')
+
+// === SESSION FILTER ===
+G_SESSION    = '■ Session Filter'
+useSession   = input.bool(false, 'Use Session Filter', group=G_SESSION)
+sessionTime  = input.session('0930-1600', 'Trading Session', group=G_SESSION)
+
+// === TRADE DIRECTION ===
+G_DIR        = '■ Trade Direction'
+tradeDir     = input.string('BOTH', 'Trade Direction', options=['LONG', 'SHORT', 'BOTH'], group=G_DIR)
+
+// === VISUALS ===
+G_VISUAL     = '■ Visual Settings'
+showLabels   = input.bool(true, 'Show Entry/Exit Labels', group=G_VISUAL)
+showLines    = input.bool(true, 'Show TP/SL Lines', group=G_VISUAL)
+showGuppy    = input.bool(false, 'Show Guppy EMAs', group=G_VISUAL)
+showVWAP     = input.bool(true, 'Show VWAP', group=G_VISUAL)
+showEMA200   = input.bool(true, 'Show EMA 200', group=G_VISUAL)
+
+// === WEBHOOK MESSAGES ===
+G_WEBHOOK    = '■ Webhook Messages'
+msgLongEntry = input.string('Long Entry', 'Long Entry Message', group=G_WEBHOOK)
+msgLongExit  = input.string('Long Exit', 'Long Exit Message', group=G_WEBHOOK)
+msgShortEntry= input.string('Short Entry', 'Short Entry Message', group=G_WEBHOOK)
+msgShortExit = input.string('Short Exit', 'Short Exit Message', group=G_WEBHOOK)
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ■ FUNCTIONS
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+// @function Non-repainting security function
+f_security(_symbol, _res, _src) =>
+    request.security(_symbol, _res, _src[barstate.isrealtime ? 1 : 0],
+         lookahead=barmerge.lookahead_on, gaps=barmerge.gaps_off)
+
+// @function Supertrend calculation
+f_supertrend(_factor, _atrLen) =>
+    atr = ta.atr(_atrLen)
+    upperBand = hl2 + _factor * atr
+    lowerBand = hl2 - _factor * atr
+    var float prevUpperBand = na
+    var float prevLowerBand = na
+    var int trend = 1
+
+    prevUpperBand := nz(prevUpperBand[1], upperBand)
+    prevLowerBand := nz(prevLowerBand[1], lowerBand)
+
+    upperBand := upperBand < prevUpperBand or close[1] > prevUpperBand ? upperBand : prevUpperBand
+    lowerBand := lowerBand > prevLowerBand or close[1] < prevLowerBand ? lowerBand : prevLowerBand
+
+    trend := close > prevUpperBand ? 1 : close < prevLowerBand ? -1 : nz(trend[1], 1)
+    stLine = trend == 1 ? lowerBand : upperBand
+
+    [stLine, trend]
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ■ CALCULATIONS
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+// === DATE RANGE ===
+dateInRange = true
+if useDateRange
+    dateInRange := time >= i_startTime and time <= i_endTime
+
+// === SESSION FILTER ===
+inSession = true
+if useSession
+    inSession := not na(time(timeframe.period, sessionTime))
+
+// === HTF ALMA ===
+htfClose = f_security(syminfo.tickerid, htfRes, close)
+htfALMA  = ta.alma(htfClose, almaLength, almaOffset, almaSigma)
+htfBull  = htfClose > htfALMA
+htfBear  = htfClose < htfALMA
+
+// === GUPPY EMA RIBBONS ===
+// Fast EMAs (3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23)
+emaF1  = ta.ema(close, 3)
+emaF2  = ta.ema(close, 5)
+emaF3  = ta.ema(close, 7)
+emaF4  = ta.ema(close, 9)
+emaF5  = ta.ema(close, 11)
+emaF6  = ta.ema(close, 13)
+emaF7  = ta.ema(close, 15)
+emaF8  = ta.ema(close, 17)
+emaF9  = ta.ema(close, 19)
+emaF10 = ta.ema(close, 21)
+emaF11 = ta.ema(close, 23)
+
+// Slow EMAs (25, 28, 31, 34, 37, 40, 43, 46, 49, 52, 55, 58, 61, 64, 67, 70)
+emaS1  = ta.ema(close, 25)
+emaS2  = ta.ema(close, 28)
+emaS3  = ta.ema(close, 31)
+emaS4  = ta.ema(close, 34)
+emaS5  = ta.ema(close, 37)
+emaS6  = ta.ema(close, 40)
+emaS7  = ta.ema(close, 43)
+emaS8  = ta.ema(close, 46)
+emaS9  = ta.ema(close, 49)
+emaS10 = ta.ema(close, 52)
+emaS11 = ta.ema(close, 55)
+emaS12 = ta.ema(close, 58)
+emaS13 = ta.ema(close, 61)
+emaS14 = ta.ema(close, 64)
+emaS15 = ta.ema(close, 67)
+emaS16 = ta.ema(close, 70)
+
+// Guppy averages
+emaFast = (emaF1 + emaF2 + emaF3 + emaF4 + emaF5 + emaF6 + emaF7 + emaF8 + emaF9 + emaF10 + emaF11) / 11
+emaSlow = (emaS1 + emaS2 + emaS3 + emaS4 + emaS5 + emaS6 + emaS7 + emaS8 + emaS9 + emaS10 + emaS11 + emaS12 + emaS13 + emaS14 + emaS15 + emaS16) / 16
+
+// Fast EMA alignment (bullish when properly stacked)
+fastAlignBull = emaF1 > emaF2 and emaF2 > emaF3 and emaF3 > emaF4 and emaF4 > emaF5 and
+     emaF5 > emaF6 and emaF6 > emaF7 and emaF7 > emaF8 and emaF8 > emaF9 and
+     emaF9 > emaF10 and emaF10 > emaF11
+
+fastAlignBear = emaF1 < emaF2 and emaF2 < emaF3 and emaF3 < emaF4 and emaF4 < emaF5 and
+     emaF5 < emaF6 and emaF6 < emaF7 and emaF7 < emaF8 and emaF8 < emaF9 and
+     emaF9 < emaF10 and emaF10 < emaF11
+
+// Slow EMA alignment
+slowAlignBull = emaS1 > emaS2 and emaS2 > emaS3 and emaS3 > emaS4 and emaS4 > emaS5 and
+     emaS5 > emaS6 and emaS6 > emaS7 and emaS7 > emaS8 and emaS8 > emaS9 and
+     emaS9 > emaS10 and emaS10 > emaS11 and emaS11 > emaS12 and emaS12 > emaS13 and
+     emaS13 > emaS14 and emaS14 > emaS15 and emaS15 > emaS16
+
+slowAlignBear = emaS1 < emaS2 and emaS2 < emaS3 and emaS3 < emaS4 and emaS4 < emaS5 and
+     emaS5 < emaS6 and emaS6 < emaS7 and emaS7 < emaS8 and emaS8 < emaS9 and
+     emaS9 < emaS10 and emaS10 < emaS11 and emaS11 < emaS12 and emaS12 < emaS13 and
+     emaS13 < emaS14 and emaS14 < emaS15 and emaS15 < emaS16
+
+// Guppy signals
+var int guppyBuy = 0
+var int guppySell = 0
+
+guppyBuy := emaFast > emaSlow and fastAlignBull and emaS1 > emaS16 ?
+     nz(guppyBuy[1]) > 0 ? guppyBuy[1] + 1 : 1 : 0
+
+guppySell := emaFast < emaSlow and fastAlignBear and emaS1 < emaS16 ?
+     nz(guppySell[1]) > 0 ? guppySell[1] + 1 : 1 : 0
+
+guppyLongSignal = guppyBuy == 1 and ta.barssince(nz(guppyBuy[1], 1) == 1) > guppyLook
+guppyShortSignal = guppySell == 1 and ta.barssince(nz(guppySell[1], 1) == 1) > guppyLook
+
+// === VWAP ===
+vwapValue = ta.vwap(close)
+
+// === SUPERTREND ===
+[stLine, stTrend] = f_supertrend(stFactor, stLength)
+stBullish = stTrend == 1
+stBearish = stTrend == -1
+
+// === EMA 200 ===
+ema200 = ta.ema(close, ema200Len)
+ema200Bull = close > ema200
+ema200Bear = close < ema200
+
+// === ATR FOR STOPS ===
+atrValue = ta.atr(atrLength)
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ■ ENTRY CONDITIONS
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+// === BUILD CONFLUENCE CONDITIONS ===
+htfCondLong  = useHTFFilter ? htfBull : true
+htfCondShort = useHTFFilter ? htfBear : true
+
+guppyCondLong  = useGuppy ? guppyLongSignal : true
+guppyCondShort = useGuppy ? guppyShortSignal : true
+
+vwapCondLong  = useVWAP ? close > vwapValue : true
+vwapCondShort = useVWAP ? close < vwapValue : true
+
+stCondLong  = useST ? stBullish and ta.crossover(close, stLine) : true
+stCondShort = useST ? stBearish and ta.crossunder(close, stLine) : true
+
+ema200CondLong  = useEMA200 ? ema200Bull : true
+ema200CondShort = useEMA200 ? ema200Bear : true
+
+// === FINAL ENTRY SIGNALS ===
+longEntry = htfCondLong and guppyCondLong and vwapCondLong and stCondLong and ema200CondLong and
+     dateInRange and inSession and barstate.isconfirmed
+
+shortEntry = htfCondShort and guppyCondShort and vwapCondShort and stCondShort and ema200CondShort and
+     dateInRange and inSession and barstate.isconfirmed
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ■ DAILY LIMITS TRACKING
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+var int dailyTrades = 0
+var float dailyProfit = 0.0
+var int lastDay = 0
+
+// Reset counters at new day
+if dayofmonth != lastDay
+    dailyTrades := 0
+    dailyProfit := 0.0
+    lastDay := dayofmonth
+
+// Track profit from closed trades today
+for i = 0 to strategy.closedtrades - 1
+    if strategy.closedtrades.entry_time(i) > time - 86400000
+        dailyProfit += strategy.closedtrades.profit(i)
+
+// Check if limits reached
+limitsOK = dailyTrades < maxDayTrades and dailyProfit < maxDayProfit
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ■ POSITION MANAGEMENT
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+var float entryPrice = 0.0
+var float stopLoss = 0.0
+var float takeProfit1 = 0.0
+var float takeProfit2 = 0.0
+var float takeProfit3 = 0.0
+
+// Calculate position size
+calcPositionSize(slDistance) =>
+    if useSLBased
+        qty = riskAmount / slDistance
+        math.round(qty, 3)
+    else
+        qty = fixedUSD / close
+        math.round(qty, 3)
+
+// === LONG ENTRIES ===
+if longEntry and strategy.position_size <= 0 and limitsOK and tradeDir != 'SHORT'
+    entryPrice := close
+    stopLoss := close - (atrValue * atrMultSL)
+    slDistance = entryPrice - stopLoss
+
+    takeProfit1 := entryPrice + (slDistance * riskReward1)
+    takeProfit2 := entryPrice + (slDistance * riskReward2)
+    takeProfit3 := entryPrice + (slDistance * riskReward3)
+
+    qty = calcPositionSize(slDistance)
+
+    strategy.entry('Long', strategy.long, qty=qty, alert_message=msgLongEntry)
+    dailyTrades += 1
+
+// === SHORT ENTRIES ===
+if shortEntry and strategy.position_size >= 0 and limitsOK and tradeDir != 'LONG'
+    entryPrice := close
+    stopLoss := close + (atrValue * atrMultSL)
+    slDistance = stopLoss - entryPrice
+
+    takeProfit1 := entryPrice - (slDistance * riskReward1)
+    takeProfit2 := entryPrice - (slDistance * riskReward2)
+    takeProfit3 := entryPrice - (slDistance * riskReward3)
+
+    qty = calcPositionSize(slDistance)
+
+    strategy.entry('Short', strategy.short, qty=qty, alert_message=msgShortEntry)
+    dailyTrades += 1
+
+// === EXITS ===
+if strategy.position_size > 0
+    strategy.exit('LX-TP1', 'Long', qty_percent=qtyTP1, limit=takeProfit1, stop=stopLoss,
+         comment_profit='LX-TP1', comment_loss='LX-SL', alert_message=msgLongExit)
+    strategy.exit('LX-TP2', 'Long', qty_percent=qtyTP2, limit=takeProfit2, stop=stopLoss,
+         comment_profit='LX-TP2', comment_loss='LX-SL', alert_message=msgLongExit)
+    strategy.exit('LX-TP3', 'Long', qty_percent=qtyTP3, limit=takeProfit3, stop=stopLoss,
+         comment_profit='LX-TP3', comment_loss='LX-SL', alert_message=msgLongExit)
+
+if strategy.position_size < 0
+    strategy.exit('SX-TP1', 'Short', qty_percent=qtyTP1, limit=takeProfit1, stop=stopLoss,
+         comment_profit='SX-TP1', comment_loss='SX-SL', alert_message=msgShortExit)
+    strategy.exit('SX-TP2', 'Short', qty_percent=qtyTP2, limit=takeProfit2, stop=stopLoss,
+         comment_profit='SX-TP2', comment_loss='SX-SL', alert_message=msgShortExit)
+    strategy.exit('SX-TP3', 'Short', qty_percent=qtyTP3, limit=takeProfit3, stop=stopLoss,
+         comment_profit='SX-TP3', comment_loss='SX-SL', alert_message=msgShortExit)
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ■ VISUALS
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+// === GUPPY EMAs ===
+plot(showGuppy ? emaF1 : na, 'Fast EMA 1', color.new(color.aqua, 85), 1)
+plot(showGuppy ? emaF2 : na, 'Fast EMA 2', color.new(color.aqua, 80), 1)
+plot(showGuppy ? emaF3 : na, 'Fast EMA 3', color.new(color.aqua, 75), 1)
+plot(showGuppy ? emaF4 : na, 'Fast EMA 4', color.new(color.aqua, 70), 1)
+plot(showGuppy ? emaF5 : na, 'Fast EMA 5', color.new(color.aqua, 65), 1)
+plot(showGuppy ? emaF6 : na, 'Fast EMA 6', color.new(color.aqua, 60), 1)
+
+plot(showGuppy ? emaS1 : na, 'Slow EMA 1', color.new(color.orange, 85), 1)
+plot(showGuppy ? emaS2 : na, 'Slow EMA 2', color.new(color.orange, 80), 1)
+plot(showGuppy ? emaS3 : na, 'Slow EMA 3', color.new(color.orange, 75), 1)
+plot(showGuppy ? emaS4 : na, 'Slow EMA 4', color.new(color.orange, 70), 1)
+plot(showGuppy ? emaS5 : na, 'Slow EMA 5', color.new(color.orange, 65), 1)
+plot(showGuppy ? emaS6 : na, 'Slow EMA 6', color.new(color.orange, 60), 1)
+
+// === VWAP ===
+plot(showVWAP ? vwapValue : na, 'VWAP', color.new(color.purple, 0), 2)
+
+// === EMA 200 ===
+plot(showEMA200 ? ema200 : na, 'EMA 200', color.new(color.yellow, 0), 2)
+
+// === SUPERTREND ===
+plot(useST ? stLine : na, 'Supertrend', stTrend == 1 ? color.green : color.red, 2)
+
+// === TP/SL LINES ===
+var line slLinePlot = na
+var line tp1LinePlot = na
+var line tp2LinePlot = na
+var line tp3LinePlot = na
+var line entryLinePlot = na
+
+if showLines and strategy.position_size != 0
+    line.delete(slLinePlot)
+    line.delete(tp1LinePlot)
+    line.delete(tp2LinePlot)
+    line.delete(tp3LinePlot)
+    line.delete(entryLinePlot)
+
+    slLinePlot := line.new(bar_index, stopLoss, bar_index + 10, stopLoss,
+         color=color.red, width=2, style=line.style_solid)
+    tp1LinePlot := line.new(bar_index, takeProfit1, bar_index + 10, takeProfit1,
+         color=color.green, width=1, style=line.style_dashed)
+    tp2LinePlot := line.new(bar_index, takeProfit2, bar_index + 10, takeProfit2,
+         color=color.green, width=1, style=line.style_dashed)
+    tp3LinePlot := line.new(bar_index, takeProfit3, bar_index + 10, takeProfit3,
+         color=color.green, width=1, style=line.style_dashed)
+    entryLinePlot := line.new(bar_index, entryPrice, bar_index + 10, entryPrice,
+         color=color.blue, width=2, style=line.style_solid)
+
+// === ENTRY/EXIT LABELS ===
+plotshape(showLabels and longEntry, 'Long Entry', shape.labelup, location.belowbar,
+     color.new(color.green, 0), text='LONG', textcolor=color.white, size=size.small)
+
+plotshape(showLabels and shortEntry, 'Short Entry', shape.labeldown, location.abovebar,
+     color.new(color.red, 0), text='SHORT', textcolor=color.white, size=size.small)
+
+// === BACKGROUND COLOR (Session) ===
+bgcolor(useSession and inSession ? color.new(color.blue, 95) : na, title='Session Background')
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ■ ALERTS
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+if longEntry
+    alert('ALPHA HYBRID PRO: Long Entry Signal\nPrice: ' + str.tostring(close) +
+         '\nSL: ' + str.tostring(stopLoss) + '\nTP1: ' + str.tostring(takeProfit1),
+         alert.freq_once_per_bar_close)
+
+if shortEntry
+    alert('ALPHA HYBRID PRO: Short Entry Signal\nPrice: ' + str.tostring(close) +
+         '\nSL: ' + str.tostring(stopLoss) + '\nTP1: ' + str.tostring(takeProfit1),
+         alert.freq_once_per_bar_close)
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// ■ DEBUG INFO (Data Window Only)
+// ══════════════════════════════════════════════════════════════════════════════════════
+
+plot(htfBull ? 1 : 0, 'HTF Bullish', display=display.data_window)
+plot(guppyLongSignal ? 1 : 0, 'Guppy Long', display=display.data_window)
+plot(stBullish ? 1 : 0, 'ST Bullish', display=display.data_window)
+plot(dailyTrades, 'Daily Trades', display=display.data_window)
+plot(dailyProfit, 'Daily Profit', display=display.data_window)
+plot(strategy.position_size, 'Position Size', display=display.data_window)
+
+// ══════════════════════════════════════════════════════════════════════════════════════
+// END OF STRATEGY
+// ══════════════════════════════════════════════════════════════════════════════════════

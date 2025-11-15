@@ -1,0 +1,567 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © traderschatroom88
+// HYBRID NON-REPAINT HTF - RE-ENTRY FIXED
+// Fixed: Allows re-entry on same HTF signal after position closes
+
+//@version=5
+VERSION = '111-REENTRY-FIXED'
+strategy(
+  'XXX Hybrid - HTF IMPROVED',
+  shorttitle = 'XXX ' + VERSION,
+  overlay = true,
+  explicit_plot_zorder = true,
+  pyramiding = 0,
+  default_qty_type = strategy.percent_of_equity,
+  default_qty_value = 10,
+  calc_on_every_tick = false,
+  process_orders_on_close = true)
+
+// === INPUTS ===
+res = input.timeframe('Chart', 'TIMEFRAME', group = "NON REPAINT", tooltip = "'Chart' uses chart timeframe * multiplier")
+useRes = input(true, 'Use Alternate Signals', group = "NON REPAINT", tooltip = "Enable Higher Timeframe signals")
+intRes = input.int(8, 'Multiplier for Alternate Signals', minval=2, group = "NON REPAINT", tooltip = "Minimum 2x for BALANCED mode, recommend 4x or higher")
+entryMode = input.string('AGGRESSIVE', 'Entry Mode', options = ['AGGRESSIVE', 'BALANCED', 'CONSERVATIVE'], group = "NON REPAINT", tooltip = "AGGRESSIVE: Fast, may repaint | BALANCED: Waits for HTF close (use 4x+ multiplier) | CONSERVATIVE: Slowest, no repaint")
+basisType = input.string('ALMA', 'MA Type: ', options = ['TEMA', 'HullMA', 'ALMA'], group = "MA SETTINGS")
+basisLen = input.int(2, 'MA Period', minval = 1, group = "MA SETTINGS")
+offsetSigma = input.int(5, 'Offset for LSMA / Sigma for ALMA', minval = 0, group = "MA SETTINGS")
+offsetALMA = input.float(0.85, 'Offset for ALMA', minval = 0, step = 0.01, group = "MA SETTINGS")
+delayOffset = input.int(0, 'Delay Open/Close MA', minval = 0, step = 1, group = "NON REPAINT", tooltip = 'Add delay for more stability (0-2 bars recommended)')
+tradeType = input.string('BOTH', 'What trades should be taken : ', options = ['LONG', 'SHORT', 'BOTH', 'NONE'], group = "TRADE SETTINGS")
+h = input(false, 'Signals for Heikin Ashi Candles', group = "TRADE SETTINGS", tooltip = "Enable for Heikin Ashi charts")
+
+// Additional entry control
+minBarsBetweenEntries = input.int(3, 'Minimum Bars Between Re-entries', minval = 1, maxval = 50, group = "NON REPAINT", tooltip = "Prevents rapid-fire entries - increase for calmer trading")
+
+// Additional filters
+useTrendFilter = input.bool(true, 'Use Trend Filter (EMA200)', group = "FILTERS")
+useATRFilter = input.bool(true, 'Use ATR Volatility Filter', group = "FILTERS")
+atrMultiplier = input.float(1.5, 'ATR Multiplier for filtering low volatility', group = "FILTERS", minval = 0.5, step = 0.1)
+
+// INDICATOR SETTINGS
+swing_length = input.int(10, 'Swing High/Low Length', group = 'Settings', minval = 1, maxval = 50)
+history_of_demand_to_keep = input.int(20, 'History To Keep', minval = 5, maxval = 50)
+box_width = input.float(2.5, 'Supply/Demand Box Width', group = 'Settings', minval = 1, maxval = 10, step = 0.5)
+
+// VISUAL SETTINGS
+show_zigzag = input.bool(false, 'Show Zig Zag', group = 'Visual Settings', inline = '1')
+show_price_action_labels = input.bool(false, 'Show Price Action Labels', group = 'Visual Settings', inline = '2')
+supply_color = input.color(#00000000, 'Supply', group = 'Visual Settings', inline = '3')
+supply_outline_color = input.color(#00000000, 'Outline', group = 'Visual Settings', inline = '3')
+demand_color = input.color(#00000000, 'Demand', group = 'Visual Settings', inline = '4')
+demand_outline_color = input.color(#00000000, 'Outline', group = 'Visual Settings', inline = '4')
+bos_label_color = input.color(#00000000, 'BOS Label', group = 'Visual Settings', inline = '5')
+poi_label_color = input.color(#00000000, 'POI Label', group = 'Visual Settings', inline = '7')
+poi_border_color = input.color(#00000000, 'POI border', group = 'Visual Settings', inline = '7')
+swing_type_color = input.color(#00000000, 'Price Action Label', group = 'Visual Settings', inline = '8')
+zigzag_color = input.color(#00000000, 'Zig Zag', group = 'Visual Settings', inline = '9')
+
+// -----------------------------------------------------------------------------
+// Utility functions (visual helpers)
+// -----------------------------------------------------------------------------
+f_array_add_pop(array, new_value_to_add) =>
+    array.unshift(array, new_value_to_add)
+    array.pop(array)
+
+f_sh_sl_labels(array, swing_type) =>
+    var string label_text = na
+    if swing_type == 1
+        label_text := array.get(array,0) >= array.get(array,1) ? 'HH' : 'LH'
+        label.new(bar_index - swing_length, array.get(array,0), text = label_text, style = label.style_label_down, textcolor = swing_type_color, color = swing_type_color, size = size.tiny)
+    else
+        label_text := array.get(array,0) >= array.get(array,1) ? 'HL' : 'LL'
+        label.new(bar_index - swing_length, array.get(array,0), text = label_text, style = label.style_label_up, textcolor = swing_type_color, color = swing_type_color, size = size.tiny)
+
+f_check_overlapping(new_poi, box_array, atrValue) =>
+    atr_threshold = atrValue * 2
+    ok = true
+    for i = 0 to array.size(box_array) - 1
+        top = box.get_top(array.get(box_array, i))
+        bottom = box.get_bottom(array.get(box_array, i))
+        poi = (top + bottom) / 2
+        upper_boundary = poi + atr_threshold
+        lower_boundary = poi - atr_threshold
+        if new_poi >= lower_boundary and new_poi <= upper_boundary
+            ok := false
+            break
+    ok
+
+f_supply_demand(value_array, bn_array, box_array, label_array, box_type, atrValue) =>
+    atr_buffer = atrValue * (box_width / 10)
+    box_left = array.get(bn_array, 0)
+    box_right = bar_index
+    var float box_top = 0.0
+    var float box_bottom = 0.0
+    if box_type == 1
+        box_top := array.get(value_array, 0)
+        box_bottom := box_top - atr_buffer
+    else
+        box_bottom := array.get(value_array, 0)
+        box_top := box_bottom + atr_buffer
+    poi = (box_top + box_bottom) / 2
+    ok = f_check_overlapping(poi, box_array, atrValue)
+    if ok
+        box.delete(array.get(box_array, array.size(box_array) - 1))
+        f_array_add_pop(box_array, box.new(left = box_left, top = box_top, right = box_right, bottom = box_bottom, border_color = box_type == 1 ? supply_outline_color : demand_outline_color, bgcolor = box_type == 1 ? supply_color : demand_color, extend = extend.right, text = box_type == 1 ? 'SUPPLY' : 'DEMAND', text_color = poi_label_color))
+        box.delete(array.get(label_array, array.size(label_array) - 1))
+        f_array_add_pop(label_array, box.new(left = box_left, top = poi, right = box_right, bottom = poi, border_color = poi_border_color, bgcolor = poi_border_color, extend = extend.right, text = 'POI', text_color = poi_label_color))
+
+f_sd_to_bos(box_array, bos_array, label_array, zone_type) =>
+    for i = 0 to array.size(box_array) - 1
+        level_to_break = zone_type == 1 ? box.get_top(array.get(box_array, i)) : box.get_bottom(array.get(box_array, i))
+        if (zone_type == 1 and close >= level_to_break) or (zone_type == -1 and close <= level_to_break)
+            copied_box = box.copy(array.get(box_array, i))
+            f_array_add_pop(bos_array, copied_box)
+            mid = (box.get_top(array.get(box_array, i)) + box.get_bottom(array.get(box_array, i))) / 2
+            box.set_top(array.get(bos_array, 0), mid)
+            box.set_bottom(array.get(bos_array, 0), mid)
+            box.set_extend(array.get(bos_array, 0), extend.none)
+            box.set_right(array.get(bos_array, 0), bar_index)
+            box.set_text(array.get(bos_array, 0), 'BOS')
+            box.set_text_color(array.get(bos_array, 0), bos_label_color)
+            box.delete(array.get(box_array, i))
+            box.delete(array.get(label_array, i))
+
+f_extend_box_endpoint(box_array) =>
+    for i = 0 to array.size(box_array) - 1
+        box.set_right(array.get(box_array, i), bar_index + 100)
+
+// -----------------------------------------------------------------------------
+// Calculate HTF timeframe string
+// -----------------------------------------------------------------------------
+stratRes = res == 'Chart' ? (timeframe.ismonthly  ? str.tostring(timeframe.multiplier * intRes, '###M') :
+           timeframe.isweekly   ? str.tostring(timeframe.multiplier * intRes, '###W') :
+           timeframe.isdaily    ? str.tostring(timeframe.multiplier * intRes, '###D') :
+           timeframe.isintraday ? str.tostring(timeframe.multiplier * intRes, '####') :
+           '60') : res
+
+// -----------------------------------------------------------------------------
+// Data source - Handle Heikin Ashi properly
+// -----------------------------------------------------------------------------
+src = h ? request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, close, lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off) : close
+srcOpen = h ? request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, open, lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off) : open
+srcHigh = h ? request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, high, lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off) : high
+srcLow = h ? request.security(ticker.heikinashi(syminfo.tickerid), timeframe.period, low, lookahead = barmerge.lookahead_off, gaps = barmerge.gaps_off) : low
+
+atrValue = ta.atr(14)
+atr50 = ta.atr(50)
+swing_high = ta.pivothigh(srcHigh, swing_length, swing_length)
+swing_low = ta.pivotlow(srcLow, swing_length, swing_length)
+
+var swing_high_values = array.new_float(5, 0.0)
+var swing_low_values = array.new_float(5, 0.0)
+var swing_high_bns = array.new_int(5, 0)
+var swing_low_bns = array.new_int(5, 0)
+var current_supply_box = array.new_box(history_of_demand_to_keep, na)
+var current_demand_box = array.new_box(history_of_demand_to_keep, na)
+var current_supply_poi = array.new_box(history_of_demand_to_keep, na)
+var current_demand_poi = array.new_box(history_of_demand_to_keep, na)
+var supply_bos = array.new_box(5, na)
+var demand_bos = array.new_box(5, na)
+
+if not na(swing_high)
+    f_array_add_pop(swing_high_values, swing_high)
+    f_array_add_pop(swing_high_bns, bar_index[swing_length])
+    if show_price_action_labels
+        f_sh_sl_labels(swing_high_values, 1)
+    f_supply_demand(swing_high_values, swing_high_bns, current_supply_box, current_supply_poi, 1, atr50)
+else if not na(swing_low)
+    f_array_add_pop(swing_low_values, swing_low)
+    f_array_add_pop(swing_low_bns, bar_index[swing_length])
+    if show_price_action_labels
+        f_sh_sl_labels(swing_low_values, -1)
+    f_supply_demand(swing_low_values, swing_low_bns, current_demand_box, current_demand_poi, -1, atr50)
+
+f_sd_to_bos(current_supply_box, supply_bos, current_supply_poi, 1)
+f_sd_to_bos(current_demand_box, demand_bos, current_demand_poi, -1)
+f_extend_box_endpoint(current_supply_box)
+f_extend_box_endpoint(current_demand_box)
+
+// -----------------------------------------------------------------------------
+// MA variant function
+// -----------------------------------------------------------------------------
+variant(type, src, len, offSig, offALMA) =>
+    v1 = ta.sma(src, len)
+    v2 = ta.ema(src, len)
+    v3 = 2 * v2 - ta.ema(v2, len)
+    v4 = 3 * (v2 - ta.ema(v2, len)) + ta.ema(ta.ema(v2, len), len)
+    v5 = ta.wma(src, len)
+    v6 = ta.vwma(src, len)
+    v7 = 0.0
+    sma1 = ta.sma(src, len)
+    v7 := na(v7[1]) ? sma1 : (v7[1] * (len - 1) + src) / len
+    v8 = ta.wma(2 * ta.wma(src, len / 2) - ta.wma(src, len), math.round(math.sqrt(len)))
+    v9 = ta.linreg(src, len, offSig)
+    v10 = ta.alma(src, len, offALMA, offSig)
+    v11 = ta.sma(v1, len)
+    a1 = math.exp(-1.414 * 3.14159 / len)
+    b1 = 2 * a1 * math.cos(1.414 * 3.14159 / len)
+    c2 = b1
+    c3 = -a1 * a1
+    c1 = 1 - c2 - c3
+    v12 = 0.0
+    v12 := c1 * (src + nz(src[1])) / 2 + c2 * nz(v12[1]) + c3 * nz(v12[2])
+    type == 'EMA' ? v2 : type == 'DEMA' ? v3 : type == 'TEMA' ? v4 : type == 'WMA' ? v5 : type == 'VWMA' ? v6 : type == 'SMMA' ? v7 : type == 'HullMA' ? v8 : type == 'LSMA' ? v9 : type == 'ALMA' ? v10 : type == 'TMA' ? v11 : type == 'SSMA' ? v12 : v1
+
+// Calculate MA on chart timeframe with delay
+closeSeries = variant(basisType, src[delayOffset], basisLen, offsetSigma, offsetALMA)
+openSeries = variant(basisType, srcOpen[delayOffset], basisLen, offsetSigma, offsetALMA)
+
+// -----------------------------------------------------------------------------
+// ADAPTIVE HTF LOGIC - Balances speed and reliability
+// -----------------------------------------------------------------------------
+
+// Select lookahead based on entry mode
+useLookahead = entryMode == 'AGGRESSIVE' ? barmerge.lookahead_on : 
+               entryMode == 'BALANCED' ? barmerge.lookahead_on : 
+               barmerge.lookahead_off
+
+// Get HTF MA values
+closeSeriesHTF = useRes ? request.security(syminfo.tickerid, stratRes, closeSeries, lookahead = useLookahead, gaps = barmerge.gaps_off) : closeSeries
+openSeriesHTF = useRes ? request.security(syminfo.tickerid, stratRes, openSeries, lookahead = useLookahead, gaps = barmerge.gaps_off) : openSeries
+
+// For BALANCED mode: Use barstate.isconfirmed to wait for HTF close
+htfConfirmed = useRes and entryMode == 'BALANCED' ? request.security(syminfo.tickerid, stratRes, barstate.isconfirmed, lookahead = barmerge.lookahead_on, gaps = barmerge.gaps_off) : true
+
+// Detect crossovers
+bullCross = ta.crossover(closeSeriesHTF, openSeriesHTF)
+bearCross = ta.crossunder(closeSeriesHTF, openSeriesHTF)
+
+// Current signal state (not just crossovers)
+bullSignal = closeSeriesHTF > openSeriesHTF
+bearSignal = closeSeriesHTF < openSeriesHTF
+
+// Track if we're already in a position from current signal
+var bool inBullSignal = false
+var bool inBearSignal = false
+var int lastEntryBar = 0
+
+// Reset flags when signal changes
+if bearCross
+    inBullSignal := false
+if bullCross
+    inBearSignal := false
+
+// Cooldown logic - prevent rapid entries
+barsSinceLastEntry = bar_index - lastEntryBar
+entryCooldownOK = barsSinceLastEntry >= minBarsBetweenEntries or lastEntryBar == 0
+
+// Allow entry if: NEW crossover OR same signal but no position AND cooldown passed
+leTriggerCross = bullCross and entryCooldownOK
+leTriggerReentry = bullSignal and not inBullSignal and strategy.position_size == 0 and entryCooldownOK
+
+seTriggerCross = bearCross and entryCooldownOK
+seTriggerReentry = bearSignal and not inBearSignal and strategy.position_size == 0 and entryCooldownOK
+
+// Apply HTF confirmation based on mode
+leTrigger = entryMode == 'BALANCED' ? ((leTriggerCross or leTriggerReentry) and htfConfirmed) : (leTriggerCross or leTriggerReentry)
+seTrigger = entryMode == 'BALANCED' ? ((seTriggerCross or seTriggerReentry) and htfConfirmed) : (seTriggerCross or seTriggerReentry)
+
+// Additional filters
+ema200 = ta.ema(close, 200)
+trendFilter = useTrendFilter ? (close > ema200) : true
+trendFilterShort = useTrendFilter ? (close < ema200) : true
+
+// ATR Filter - avoid trading in low volatility
+atrFilter = useATRFilter ? (atrValue > ta.sma(atrValue, 50) * atrMultiplier) : true
+
+// Entry conditions with filters
+longAllowed = (tradeType == 'LONG' or tradeType == 'BOTH') and trendFilter and atrFilter
+shortAllowed = (tradeType == 'SHORT' or tradeType == 'BOTH') and trendFilterShort and atrFilter
+
+longEntry = leTrigger and longAllowed and strategy.position_size == 0
+shortEntry = seTrigger and shortAllowed and strategy.position_size == 0
+
+// Exit triggers
+lxTrigger = bearCross
+sxTrigger = bullCross
+
+// -----------------------------------------------------------------------------
+// RISK MANAGEMENT
+// -----------------------------------------------------------------------------
+G_RISK = '■ ' + 'Risk Management'
+T_LVL = '(%) Exit Level'
+T_QTY = '(%) Adjust trade exit volume'
+
+i_lxLvlTP1 = input.float(1.5, 'Level TP1', group = G_RISK, tooltip = T_LVL)
+i_lxQtyTP1 = input.float(40, 'Qty   TP1', group = G_RISK, tooltip = T_QTY)
+i_lxLvlTP2 = input.float(2.5, 'Level TP2', group = G_RISK, tooltip = T_LVL)
+i_lxQtyTP2 = input.float(35, 'Qty   TP2', group = G_RISK, tooltip = T_QTY)
+i_lxLvlTP3 = input.float(4.0, 'Level TP3', group = G_RISK, tooltip = T_LVL)
+i_lxQtyTP3 = input.float(25, 'Qty   TP3', group = G_RISK, tooltip = T_QTY)
+i_lxLvlSL = input.float(1.0, 'Stop Loss', group = G_RISK, tooltip = T_LVL)
+
+i_sxLvlTP1 = i_lxLvlTP1
+i_sxQtyTP1 = i_lxQtyTP1
+i_sxLvlTP2 = i_lxLvlTP2
+i_sxQtyTP2 = i_lxQtyTP2
+i_sxLvlTP3 = i_lxLvlTP3
+i_sxQtyTP3 = i_lxQtyTP3
+i_sxLvlSL = i_lxLvlSL
+
+// Trailing stop option
+useTrailingSL = input.bool(false, 'Use Trailing Stop Loss', group = G_RISK)
+trailActivation = input.float(1.0, 'Trail Activation %', group = G_RISK)
+trailOffset = input.float(0.5, 'Trail Offset %', group = G_RISK)
+
+G_MSG = '■ ' + 'Webhook Message'
+i_leMsg = input.string('Long Entry', 'Long Entry', group = G_MSG)
+i_lxMsgSL = input.string('Long SL', 'Long SL', group = G_MSG)
+i_lxMsgTP1 = input.string('Long TP1', 'Long TP1', group = G_MSG)
+i_lxMsgTP2 = input.string('Long TP2', 'Long TP2', group = G_MSG)
+i_lxMsgTP3 = input.string('Long TP3', 'Long TP3', group = G_MSG)
+i_lxMsg = input.string('Long Exit', 'Long Exit', group = G_MSG)
+i_seMsg = input.string('Short Entry', 'Short Entry', group = G_MSG)
+i_sxMsgSL = input.string('Short SL', 'Short SL', group = G_MSG)
+i_sxMsgTP1 = input.string('Short TP1', 'Short TP1', group = G_MSG)
+i_sxMsgTP2 = input.string('Short TP2', 'Short TP2', group = G_MSG)
+i_sxMsgTP3 = input.string('Short TP3', 'Short TP3', group = G_MSG)
+i_sxMsg = input.string('Short Exit', 'Short Exit', group = G_MSG)
+
+G_DISPLAY = 'Display'
+i_alertOn = input.bool(true, 'Alert Labels On/Off', group = G_DISPLAY)
+i_barColOn = input.bool(true, 'Bar Color On/Off', group = G_DISPLAY)
+
+// Store entry price and calculate TP/SL
+var float actualEntryPrice = na
+var float tp1Level = na
+var float tp2Level = na
+var float tp3Level = na
+var float slLevel = na
+var int entryBarIndex = na
+var bool hasActivePosition = false
+
+// Track position changes more reliably
+bool positionJustOpened = (strategy.position_size != 0) and not hasActivePosition
+bool positionJustClosed = (strategy.position_size == 0) and hasActivePosition
+
+// Update position tracking
+if strategy.position_size != 0
+    hasActivePosition := true
+else if strategy.position_size == 0
+    hasActivePosition := false
+
+// Calculate levels ONLY when position actually opens
+if positionJustOpened
+    actualEntryPrice := strategy.position_avg_price
+    entryBarIndex := bar_index
+    
+    if strategy.position_size > 0
+        // Long position
+        tp1Level := actualEntryPrice * (1 + i_lxLvlTP1 / 100)
+        tp2Level := actualEntryPrice * (1 + i_lxLvlTP2 / 100)
+        tp3Level := actualEntryPrice * (1 + i_lxLvlTP3 / 100)
+        slLevel := actualEntryPrice * (1 - i_lxLvlSL / 100)
+    else if strategy.position_size < 0
+        // Short position
+        tp1Level := actualEntryPrice * (1 - i_sxLvlTP1 / 100)
+        tp2Level := actualEntryPrice * (1 - i_sxLvlTP2 / 100)
+        tp3Level := actualEntryPrice * (1 - i_sxLvlTP3 / 100)
+        slLevel := actualEntryPrice * (1 + i_sxLvlSL / 100)
+
+// Reset when position closes
+if positionJustClosed
+    actualEntryPrice := na
+    tp1Level := na
+    tp2Level := na
+    tp3Level := na
+    slLevel := na
+    entryBarIndex := na
+
+// -----------------------------------------------------------------------------
+// STRATEGY EXECUTION WITH PROPER ALERT MANAGEMENT
+// -----------------------------------------------------------------------------
+
+// Track actual fills to prevent false alerts - use position changes
+longFilled = strategy.position_size > 0 and (strategy.position_size[1] == 0 or strategy.position_size[1] < 0)
+shortFilled = strategy.position_size < 0 and (strategy.position_size[1] == 0 or strategy.position_size[1] > 0)
+
+// Long trades
+if longEntry
+    strategy.entry('Long', strategy.long, comment = 'LE')
+
+// Update flag when long position actually opens
+if longFilled
+    inBullSignal := true
+    lastEntryBar := bar_index
+    alert(i_leMsg, alert.freq_once_per_bar)
+
+if strategy.position_size > 0
+    if useTrailingSL
+        strategy.exit('LX-TP1', 'Long', qty_percent = i_lxQtyTP1, limit = tp1Level, trail_price = actualEntryPrice * (1 + trailActivation / 100), trail_offset = actualEntryPrice * (trailOffset / 100), comment_profit = 'TP1', comment_loss = 'SL')
+        strategy.exit('LX-TP2', 'Long', qty_percent = i_lxQtyTP2, limit = tp2Level, trail_price = actualEntryPrice * (1 + trailActivation / 100), trail_offset = actualEntryPrice * (trailOffset / 100), comment_profit = 'TP2', comment_loss = 'SL')
+        strategy.exit('LX-TP3', 'Long', qty_percent = i_lxQtyTP3, limit = tp3Level, trail_price = actualEntryPrice * (1 + trailActivation / 100), trail_offset = actualEntryPrice * (trailOffset / 100), comment_profit = 'TP3', comment_loss = 'SL')
+    else
+        strategy.exit('LX-TP1', 'Long', qty_percent = i_lxQtyTP1, limit = tp1Level, stop = slLevel, comment_profit = 'TP1', comment_loss = 'SL')
+        strategy.exit('LX-TP2', 'Long', qty_percent = i_lxQtyTP2, limit = tp2Level, stop = slLevel, comment_profit = 'TP2', comment_loss = 'SL')
+        strategy.exit('LX-TP3', 'Long', qty_percent = i_lxQtyTP3, limit = tp3Level, stop = slLevel, comment_profit = 'TP3', comment_loss = 'SL')
+
+if lxTrigger and strategy.position_size > 0
+    strategy.close('Long', comment = 'LX')
+    alert(i_lxMsg, alert.freq_once_per_bar)
+
+// Short trades
+if shortEntry
+    strategy.entry('Short', strategy.short, comment = 'SE')
+
+// Update flag when short position actually opens
+if shortFilled
+    inBearSignal := true
+    lastEntryBar := bar_index
+    alert(i_seMsg, alert.freq_once_per_bar)
+
+if strategy.position_size < 0
+    if useTrailingSL
+        strategy.exit('SX-TP1', 'Short', qty_percent = i_sxQtyTP1, limit = tp1Level, trail_price = actualEntryPrice * (1 - trailActivation / 100), trail_offset = actualEntryPrice * (trailOffset / 100), comment_profit = 'TP1', comment_loss = 'SL')
+        strategy.exit('SX-TP2', 'Short', qty_percent = i_sxQtyTP2, limit = tp2Level, trail_price = actualEntryPrice * (1 - trailActivation / 100), trail_offset = actualEntryPrice * (trailOffset / 100), comment_profit = 'TP2', comment_loss = 'SL')
+        strategy.exit('SX-TP3', 'Short', qty_percent = i_sxQtyTP3, limit = tp3Level, trail_price = actualEntryPrice * (1 - trailActivation / 100), trail_offset = actualEntryPrice * (trailOffset / 100), comment_profit = 'TP3', comment_loss = 'SL')
+    else
+        strategy.exit('SX-TP1', 'Short', qty_percent = i_sxQtyTP1, limit = tp1Level, stop = slLevel, comment_profit = 'TP1', comment_loss = 'SL')
+        strategy.exit('SX-TP2', 'Short', qty_percent = i_sxQtyTP2, limit = tp2Level, stop = slLevel, comment_profit = 'TP2', comment_loss = 'SL')
+        strategy.exit('SX-TP3', 'Short', qty_percent = i_sxQtyTP3, limit = tp3Level, stop = slLevel, comment_profit = 'TP3', comment_loss = 'SL')
+
+if sxTrigger and strategy.position_size < 0
+    strategy.close('Short', comment = 'SX')
+    alert(i_sxMsg, alert.freq_once_per_bar)
+
+// -----------------------------------------------------------------------------
+// VISUALS WITH FIXED LINES - Replay Compatible
+// -----------------------------------------------------------------------------
+
+// Plot EMA200 for trend reference
+plot(useTrendFilter ? ema200 : na, 'EMA 200', color.new(color.orange, 0), 2)
+
+// Use lines instead of plots for stable TP/SL visualization
+var line entryLine = na
+var line slLine = na
+var line tp1Line = na
+var line tp2Line = na
+var line tp3Line = na
+
+var label entryLabel = na
+var label slLabel = na
+var label tp1Label = na
+var label tp2Label = na
+var label tp3Label = na
+
+// Create new lines when position opens
+if positionJustOpened and not na(actualEntryPrice)
+    // Delete old lines
+    line.delete(entryLine)
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    label.delete(entryLabel)
+    label.delete(slLabel)
+    label.delete(tp1Label)
+    label.delete(tp2Label)
+    label.delete(tp3Label)
+    
+    // Create new lines anchored to entry bar
+    entryLine := line.new(bar_index, actualEntryPrice, bar_index + 50, actualEntryPrice, color = color.blue, width = 2, style = line.style_solid)
+    slLine := line.new(bar_index, slLevel, bar_index + 50, slLevel, color = color.red, width = 2, style = line.style_solid)
+    tp1Line := line.new(bar_index, tp1Level, bar_index + 50, tp1Level, color = color.green, width = 1, style = line.style_solid)
+    tp2Line := line.new(bar_index, tp2Level, bar_index + 50, tp2Level, color = color.new(color.green, 30), width = 1, style = line.style_solid)
+    tp3Line := line.new(bar_index, tp3Level, bar_index + 50, tp3Level, color = color.new(color.green, 60), width = 1, style = line.style_solid)
+    
+    // Create labels
+    entryLabel := label.new(bar_index, actualEntryPrice, "Entry: " + str.tostring(actualEntryPrice, format.mintick), color = color.blue, textcolor = color.white, style = label.style_label_left, size = size.small)
+    slLabel := label.new(bar_index, slLevel, "SL: " + str.tostring(slLevel, format.mintick), color = color.red, textcolor = color.white, style = label.style_label_left, size = size.small)
+    tp1Label := label.new(bar_index, tp1Level, "TP1: " + str.tostring(tp1Level, format.mintick), color = color.green, textcolor = color.white, style = label.style_label_left, size = size.small)
+
+// Extend lines on each bar while position is open
+if strategy.position_size != 0 and not na(entryLine)
+    line.set_x2(entryLine, bar_index + 50)
+    line.set_x2(slLine, bar_index + 50)
+    line.set_x2(tp1Line, bar_index + 50)
+    line.set_x2(tp2Line, bar_index + 50)
+    line.set_x2(tp3Line, bar_index + 50)
+
+// Delete lines when position closes
+if positionJustClosed
+    line.delete(entryLine)
+    line.delete(slLine)
+    line.delete(tp1Line)
+    line.delete(tp2Line)
+    line.delete(tp3Line)
+    label.delete(entryLabel)
+    label.delete(slLabel)
+    label.delete(tp1Label)
+    label.delete(tp2Label)
+    label.delete(tp3Label)
+    entryLine := na
+    slLine := na
+    tp1Line := na
+    tp2Line := na
+    tp3Line := na
+
+// Entry/Exit signals - Only show when trades actually execute
+plotshape(i_alertOn and longFilled, 'Long Entry', shape.labelup, location.belowbar, color.new(color.green, 0), text = 'LONG', textcolor = color.white, size = size.normal)
+plotshape(i_alertOn and shortFilled, 'Short Entry', shape.labeldown, location.abovebar, color.new(color.red, 0), text = 'SHORT', textcolor = color.white, size = size.normal)
+plotshape(i_alertOn and lxTrigger and strategy.position_size > 0, 'Long Exit Signal', shape.xcross, location.abovebar, color.new(color.orange, 0), text = 'EXIT', textcolor = color.white, size = size.small)
+plotshape(i_alertOn and sxTrigger and strategy.position_size < 0, 'Short Exit Signal', shape.xcross, location.belowbar, color.new(color.orange, 0), text = 'EXIT', textcolor = color.white, size = size.small)
+
+// Bar coloring
+barcolor(i_barColOn and strategy.position_size > 0 ? color.new(color.green, 70) : i_barColOn and strategy.position_size < 0 ? color.new(color.red, 70) : na)
+
+// Enhanced debug table with DIAGNOSTIC INFO
+var table debugTable = table.new(position.top_right, 2, 12, bgcolor = color.new(color.black, 85), border_width = 1)
+if barstate.islast
+    table.cell(debugTable, 0, 0, "MODE", text_color = color.white, text_size = size.small)
+    table.cell(debugTable, 1, 0, entryMode, text_color = color.yellow, text_size = size.small)
+    
+    table.cell(debugTable, 0, 1, "HTF", text_color = color.white, text_size = size.small)
+    table.cell(debugTable, 1, 1, useRes ? stratRes : "CHART", text_color = color.aqua, text_size = size.small)
+    
+    // Warning for low multiplier with BALANCED mode
+    if entryMode == 'BALANCED' and intRes < 4 and res == 'Chart'
+        table.cell(debugTable, 0, 2, "⚠ WARNING", text_color = color.white, text_size = size.small, bgcolor = color.new(color.red, 70))
+        table.cell(debugTable, 1, 2, "Use 4x+ or AGGRESSIVE", text_color = color.orange, text_size = size.tiny, bgcolor = color.new(color.red, 70))
+    else
+        table.cell(debugTable, 0, 2, "Signal", text_color = color.white, text_size = size.small)
+        signalText = closeSeriesHTF > openSeriesHTF ? "BULLISH" : closeSeriesHTF < openSeriesHTF ? "BEARISH" : "NEUTRAL"
+        signalColor = closeSeriesHTF > openSeriesHTF ? color.green : closeSeriesHTF < openSeriesHTF ? color.red : color.gray
+        table.cell(debugTable, 1, 2, signalText, text_color = signalColor, text_size = size.small)
+    
+    table.cell(debugTable, 0, 3, "Position", text_color = color.white, text_size = size.small)
+    table.cell(debugTable, 1, 3, strategy.position_size > 0 ? "LONG" : strategy.position_size < 0 ? "SHORT" : "FLAT", 
+               text_color = strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.gray, text_size = size.small)
+    
+    table.cell(debugTable, 0, 4, "Entry", text_color = color.white, text_size = size.small)
+    table.cell(debugTable, 1, 4, not na(actualEntryPrice) ? str.tostring(actualEntryPrice, format.mintick) : "N/A", 
+               text_color = color.blue, text_size = size.small)
+    
+    table.cell(debugTable, 0, 5, "Cooldown", text_color = color.white, text_size = size.small)
+    table.cell(debugTable, 1, 5, str.tostring(barsSinceLastEntry) + "/" + str.tostring(minBarsBetweenEntries), 
+               text_color = entryCooldownOK ? color.green : color.orange, text_size = size.small)
+    
+    // DIAGNOSTIC: Show individual filter states
+    table.cell(debugTable, 0, 6, "Trend OK?", text_color = color.white, text_size = size.tiny)
+    trendOK = not useTrendFilter or trendFilter or trendFilterShort
+    table.cell(debugTable, 1, 6, useTrendFilter ? (trendOK ? "✓" : "✗") : "OFF", 
+               text_color = trendOK ? color.green : color.red, text_size = size.small)
+    
+    table.cell(debugTable, 0, 7, "ATR OK?", text_color = color.white, text_size = size.tiny)
+    table.cell(debugTable, 1, 7, useATRFilter ? (atrFilter ? "✓" : "✗") : "OFF", 
+               text_color = atrFilter ? color.green : color.red, text_size = size.small)
+    
+    // DIAGNOSTIC: Show entry trigger states
+    table.cell(debugTable, 0, 8, "Long Trigger", text_color = color.white, text_size = size.tiny)
+    table.cell(debugTable, 1, 8, longEntry ? "YES" : "NO", 
+               text_color = longEntry ? color.green : color.gray, text_size = size.tiny)
+    
+    table.cell(debugTable, 0, 9, "Short Trigger", text_color = color.white, text_size = size.tiny)
+    table.cell(debugTable, 1, 9, shortEntry ? "YES" : "NO", 
+               text_color = shortEntry ? color.green : color.gray, text_size = size.tiny)
+    
+    // DIAGNOSTIC: Show signal flags
+    table.cell(debugTable, 0, 10, "Bull/Bear Flags", text_color = color.white, text_size = size.tiny)
+    table.cell(debugTable, 1, 10, (inBullSignal ? "B" : "") + (inBearSignal ? "S" : "") + (not inBullSignal and not inBearSignal ? "NONE" : ""), 
+               text_color = color.yellow, text_size = size.tiny)
+    
+    table.cell(debugTable, 0, 11, "P&L", text_color = color.white, text_size = size.small)
+    pnlPercent = strategy.netprofit / strategy.initial_capital * 100
+    table.cell(debugTable, 1, 11, str.tostring(pnlPercent, "#.##") + "%", 
+               text_color = pnlPercent > 0 ? color.green : pnlPercent < 0 ? color.red : color.gray, text_size = size.small)
+
+// end of script

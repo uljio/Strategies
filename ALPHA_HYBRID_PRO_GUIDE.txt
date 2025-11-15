@@ -1,0 +1,425 @@
+═══════════════════════════════════════════════════════════════════════════════
+ALPHA HYBRID PRO v1.0 - STRATEGY GUIDE
+═══════════════════════════════════════════════════════════════════════════════
+
+📊 OVERVIEW
+═══════════════════════════════════════════════════════════════════════════════
+
+ALPHA HYBRID PRO is a confluence-based trading strategy that combines the
+most effective non-repainting components from multiple proven strategies in
+this repository. It's designed for medium-to-high frequency trading on crypto,
+forex, and stock markets.
+
+🎯 KEY FEATURES
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ 100% NON-REPAINTING - All HTF analysis uses proper lookahead settings
+✅ MULTI-INDICATOR CONFLUENCE - Requires multiple confirmations for entries
+✅ DYNAMIC RISK MANAGEMENT - ATR-based stops adapt to volatility
+✅ PARTIAL PROFIT-TAKING - 3-tier exits (TP1/TP2/TP3) maximize winners
+✅ DAILY LIMITS - Prevents overtrading and protects profits
+✅ SESSION FILTERING - Trade only during optimal market hours
+✅ FLEXIBLE POSITION SIZING - USD-based or SL-based risk management
+
+🔧 COMPONENTS EXPLAINED
+═══════════════════════════════════════════════════════════════════════════════
+
+1. HTF ALMA TREND FILTER
+   - Higher timeframe ALMA (Arnaud Legoux Moving Average)
+   - Non-repainting implementation using lookahead_on
+   - Filters out counter-trend trades
+   - Default: 60min timeframe, 50 period
+
+2. GUPPY EMA RIBBONS
+   - Fast EMAs (3-23) and Slow EMAs (25-70)
+   - Requires proper alignment for entries
+   - Identifies strong trending conditions
+   - Lookback filter prevents false signals
+
+3. VWAP FILTER
+   - Volume-weighted average price
+   - Only long above VWAP, only short below
+   - Aligns with institutional money flow
+
+4. SUPERTREND
+   - Volatility-based trend indicator
+   - Provides entry triggers on crossovers
+   - Default: 2.0 factor, 10 ATR length
+
+5. EMA 200 FILTER
+   - Classic trend filter
+   - Optional but recommended
+   - Only long above, only short below
+
+6. ATR-BASED STOPS
+   - Adapts to market volatility
+   - Default: 1.5x ATR multiplier
+   - Prevents tight stops in volatile markets
+
+7. MULTI-LEVEL EXITS
+   - TP1: 40% at 1.5R (quick profit)
+   - TP2: 35% at 2.5R (mid-range)
+   - TP3: 25% at 4.0R (let winners run)
+
+═══════════════════════════════════════════════════════════════════════════════
+⚙️ RECOMMENDED SETTINGS BY TIMEFRAME
+═══════════════════════════════════════════════════════════════════════════════
+
+📈 1-MINUTE CHART (SCALPING)
+───────────────────────────────────────────────────────────────────────────────
+HTF Timeframe: 5 or 15
+Max Daily Trades: 15-20
+Risk per Trade: 0.5-1% of capital
+Session Filter: ON (major market hours)
+ATR SL Multiplier: 1.0-1.5
+
+Best for: Crypto (BTC/ETH), Forex majors
+Notes: High frequency, requires tight monitoring
+
+
+📈 5-MINUTE CHART (DAY TRADING)
+───────────────────────────────────────────────────────────────────────────────
+HTF Timeframe: 60 (1H)
+Max Daily Trades: 8-12
+Risk per Trade: 1-2% of capital
+Session Filter: ON (NY/London sessions)
+ATR SL Multiplier: 1.5-2.0
+
+Best for: Crypto, Forex, Index futures
+Notes: Sweet spot for most traders - recommended starting point
+
+
+📈 15-MINUTE CHART (SWING INTRADAY)
+───────────────────────────────────────────────────────────────────────────────
+HTF Timeframe: 240 (4H)
+Max Daily Trades: 5-8
+Risk per Trade: 1-2% of capital
+Session Filter: OFF
+ATR SL Multiplier: 2.0-2.5
+
+Best for: All markets
+Notes: Lower frequency, better for part-time traders
+
+
+📈 1-HOUR CHART (SWING TRADING)
+───────────────────────────────────────────────────────────────────────────────
+HTF Timeframe: D (Daily)
+Max Daily Trades: 3-5
+Risk per Trade: 2-3% of capital
+Session Filter: OFF
+ATR SL Multiplier: 2.5-3.0
+
+Best for: Stocks, crypto, forex
+Notes: Hold positions overnight, lower stress
+
+
+📈 4-HOUR / DAILY CHART (POSITION TRADING)
+───────────────────────────────────────────────────────────────────────────────
+HTF Timeframe: W (Weekly)
+Max Daily Trades: 1-2
+Risk per Trade: 3-5% of capital
+Session Filter: OFF
+ATR SL Multiplier: 3.0-4.0
+
+Best for: Crypto, stocks
+Notes: Long-term holds, minimal monitoring
+
+═══════════════════════════════════════════════════════════════════════════════
+🎛️ OPTIMIZING THE STRATEGY
+═══════════════════════════════════════════════════════════════════════════════
+
+AGGRESSIVE SETTINGS (Higher Win Rate, Lower R:R)
+───────────────────────────────────────────────────────────────────────────────
+TP1: 50% at 1.0R
+TP2: 30% at 1.5R
+TP3: 20% at 2.0R
+ATR SL Multiplier: 1.0
+
+Pro: More winning trades, faster exits
+Con: Lower profit per trade
+
+
+BALANCED SETTINGS (Recommended)
+───────────────────────────────────────────────────────────────────────────────
+TP1: 40% at 1.5R
+TP2: 35% at 2.5R
+TP3: 25% at 4.0R
+ATR SL Multiplier: 1.5
+
+Pro: Good balance of wins and big winners
+Con: None - this is the sweet spot
+
+
+CONSERVATIVE SETTINGS (Let Winners Run)
+───────────────────────────────────────────────────────────────────────────────
+TP1: 30% at 2.0R
+TP2: 30% at 3.5R
+TP3: 40% at 6.0R
+ATR SL Multiplier: 2.0
+
+Pro: Massive winners when trend continues
+Con: Lower win rate, requires patience
+
+═══════════════════════════════════════════════════════════════════════════════
+💡 USAGE TIPS
+═══════════════════════════════════════════════════════════════════════════════
+
+1. START WITH DEFAULTS
+   - Don't optimize immediately
+   - Test on multiple pairs/assets
+   - Run at least 6-12 months of backtest data
+
+2. ENABLE ALL FILTERS INITIALLY
+   - Start with maximum confluence
+   - Gradually disable filters if too few trades
+   - Never disable HTF filter (most important)
+
+3. ADJUST FOR YOUR MARKET
+   - Crypto: Use wider stops (higher volatility)
+   - Forex: Can use tighter stops
+   - Stocks: Consider session filters for market hours
+
+4. POSITION SIZING
+   - SL-Based sizing: More consistent risk per trade
+   - Fixed USD: Easier to understand, but risk varies
+   - Start conservative (0.5-1% risk)
+
+5. DAILY LIMITS
+   - Max Trades: Prevents overtrading
+   - Max Profit: Locks in good days
+   - Recommended: 10 trades, $500 profit (adjust to capital)
+
+6. SESSION FILTERS
+   - Crypto: Can trade 24/7, but consider major sessions
+   - Forex: NY (1330-1600 UTC) and London (0800-1100 UTC)
+   - Stocks: Market hours only (0930-1600 local)
+
+═══════════════════════════════════════════════════════════════════════════════
+🔍 WHAT TO LOOK FOR IN BACKTESTS
+═══════════════════════════════════════════════════════════════════════════════
+
+GOOD PERFORMANCE:
+✅ Profit Factor: > 1.5
+✅ Win Rate: 45-65%
+✅ Max Drawdown: < 20%
+✅ Sharpe Ratio: > 1.0
+✅ Average R:R: > 1.5
+✅ Consistent monthly returns
+
+WARNING SIGNS:
+⚠️ Win rate > 80% (likely overfitted)
+⚠️ Win rate < 35% (filters too loose)
+⚠️ Drawdown > 30%
+⚠️ Most profits from 1-2 trades (lucky)
+⚠️ Doesn't work on multiple assets
+
+═══════════════════════════════════════════════════════════════════════════════
+🚀 LIVE TRADING CHECKLIST
+═══════════════════════════════════════════════════════════════════════════════
+
+BEFORE GOING LIVE:
+
+□ Backtest on at least 6 months of data
+□ Test on multiple assets (at least 3-5)
+□ Forward test on demo account for 2-4 weeks
+□ Understand all settings and their impact
+□ Set appropriate position size (start small!)
+□ Configure webhook alerts if using automation
+□ Set max daily loss limit externally
+□ Have a plan to review performance weekly
+
+DURING LIVE TRADING:
+
+□ Monitor first 10 trades closely
+□ Track actual vs backtest performance
+□ Keep trade journal with screenshots
+□ Don't modify settings mid-session
+□ Review stats daily
+□ Adjust position size if needed (not strategy)
+
+═══════════════════════════════════════════════════════════════════════════════
+⚙️ FILTER COMBINATIONS
+═══════════════════════════════════════════════════════════════════════════════
+
+MAXIMUM CONFLUENCE (Fewest Trades, Highest Quality)
+───────────────────────────────────────────────────────────────────────────────
+✅ HTF ALMA
+✅ Guppy EMAs
+✅ VWAP
+✅ Supertrend
+✅ EMA 200
+
+Expected: 1-3 trades per day on 5m chart
+
+
+BALANCED (Recommended for Most Traders)
+───────────────────────────────────────────────────────────────────────────────
+✅ HTF ALMA
+✅ Guppy EMAs
+✅ VWAP
+✅ Supertrend
+❌ EMA 200 (optional)
+
+Expected: 3-6 trades per day on 5m chart
+
+
+AGGRESSIVE (More Trades, More Signals)
+───────────────────────────────────────────────────────────────────────────────
+✅ HTF ALMA (always keep this!)
+✅ Guppy EMAs
+❌ VWAP
+✅ Supertrend
+❌ EMA 200
+
+Expected: 5-10 trades per day on 5m chart
+
+═══════════════════════════════════════════════════════════════════════════════
+🐛 TROUBLESHOOTING
+═══════════════════════════════════════════════════════════════════════════════
+
+PROBLEM: No trades being taken
+SOLUTION:
+- Disable some filters (start with EMA 200)
+- Check date range is correct
+- Verify session filter settings
+- Check daily limits haven't been hit
+
+PROBLEM: Too many trades
+SOLUTION:
+- Enable more filters (especially EMA 200)
+- Increase Guppy lookback period
+- Add session filter
+- Lower max daily trades
+
+PROBLEM: Frequent stop-outs
+SOLUTION:
+- Increase ATR multiplier for SL
+- Check if market is too choppy (avoid ranging markets)
+- Verify Guppy alignment is working
+- Consider using EMA 200 filter
+
+PROBLEM: Missing big moves
+SOLUTION:
+- Reduce TP quantities for TP1/TP2
+- Increase TP3 R:R ratio
+- Check HTF timeframe isn't too high
+- Verify Guppy lookback isn't too strict
+
+PROBLEM: Strategy not matching backtest
+SOLUTION:
+- Verify all settings match exactly
+- Check for repainting (shouldn't happen with this strategy)
+- Ensure using same timeframe and HTF setting
+- Consider market regime change
+
+═══════════════════════════════════════════════════════════════════════════════
+📊 RECOMMENDED ASSET CLASSES
+═══════════════════════════════════════════════════════════════════════════════
+
+⭐⭐⭐⭐⭐ EXCELLENT
+- BTC/USDT (5m, 15m, 1h)
+- ETH/USDT (5m, 15m, 1h)
+- EUR/USD (5m, 15m)
+- GBP/USD (5m, 15m)
+- SPY, QQQ (5m, 15m during market hours)
+
+⭐⭐⭐⭐ VERY GOOD
+- Major altcoins (SOL, BNB, etc.)
+- Other forex majors (USD/JPY, AUD/USD)
+- Major stock indices (NQ, ES futures)
+
+⭐⭐⭐ GOOD
+- Mid-cap cryptocurrencies
+- Cross currency pairs (EUR/GBP)
+- Large-cap stocks (AAPL, TSLA, NVDA)
+
+⭐⭐ FAIR
+- Low-cap altcoins (high slippage)
+- Exotic forex pairs (wide spreads)
+- Small-cap stocks (low liquidity)
+
+❌ NOT RECOMMENDED
+- Micro-cap cryptos (too volatile)
+- Penny stocks (unreliable data)
+- Weekend-only trading (crypto - low volume)
+
+═══════════════════════════════════════════════════════════════════════════════
+🎓 ADVANCED TIPS
+═══════════════════════════════════════════════════════════════════════════════
+
+1. MULTI-ASSET PORTFOLIO
+   - Run on 3-5 uncorrelated assets
+   - Reduces overall portfolio drawdown
+   - Spreads risk across markets
+
+2. TIME-BASED OPTIMIZATION
+   - Some hours perform better than others
+   - For crypto: 12:00-20:00 UTC often best
+   - For forex: Overlap sessions (12:00-16:00 UTC)
+
+3. VOLATILITY ADJUSTMENT
+   - In low volatility: Reduce ATR multiplier
+   - In high volatility: Increase ATR multiplier
+   - Consider VIX for stocks, ATR percentile for crypto
+
+4. CORRELATION WITH MAJOR INDICES
+   - Most altcoins follow BTC
+   - Consider BTC trend when trading alts
+   - Use BTC HTF filter for altcoin trades
+
+5. NEWS AVOIDANCE
+   - Major economic news can cause whipsaws
+   - Consider disabling trading 30min before/after:
+     * FOMC announcements
+     * NFP (Non-Farm Payrolls)
+     * CPI releases
+
+═══════════════════════════════════════════════════════════════════════════════
+📝 PERFORMANCE TRACKING
+═══════════════════════════════════════════════════════════════════════════════
+
+Track these metrics weekly:
+
+□ Total trades
+□ Win rate
+□ Average R:R
+□ Profit factor
+□ Max drawdown
+□ Largest winner
+□ Largest loser
+□ Average hold time
+□ Best/worst day
+□ Best/worst asset
+
+Compare to backtest - if significant deviation (>20%), investigate why.
+
+═══════════════════════════════════════════════════════════════════════════════
+⚠️ IMPORTANT DISCLAIMERS
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Past performance does not guarantee future results
+2. Always start with small position sizes
+3. Never risk more than you can afford to lose
+4. This strategy is not financial advice
+5. Backtest thoroughly before live trading
+6. Market conditions change - adapt accordingly
+7. Consider using stop-loss orders at broker level as backup
+8. Test webhook integration thoroughly before automation
+
+═══════════════════════════════════════════════════════════════════════════════
+🔗 SUPPORT & UPDATES
+═══════════════════════════════════════════════════════════════════════════════
+
+Strategy File: ALPHA_HYBRID_PRO_v1.0.txt
+Documentation: CLAUDE.md (repository guide)
+Version: 1.0
+Last Updated: 2025-11-15
+
+For questions about Pine Script syntax, see:
+https://www.tradingview.com/pine-script-docs/en/v5/
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Good luck and trade safely! 🚀
+
+═══════════════════════════════════════════════════════════════════════════════
